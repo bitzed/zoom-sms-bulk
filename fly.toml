@@ -1,0 +1,38 @@
+app = 'zoom-sms-bulk'
+primary_region = 'nrt'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  PORT = '8080'
+  DATA_DIR = '/data'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_start_machines = true
+  # Critical: a suspended machine stops the dispatcher mid-send. Fly's default
+  # scale-to-zero is fine for request/response apps and wrong for this one.
+  auto_stop_machines = 'off'
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/healthz'
+
+# Drafts, recipients and send history live here. Without it they are lost on
+# every deploy, and the app refuses to start.
+[mounts]
+  source = 'sms_data'
+  destination = '/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
+  # One machine only: two would each run their own dispatcher against their own
+  # volume, and neither would know about the other's sends.
+  processes = ['app']

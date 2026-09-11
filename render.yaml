@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: zoom-sms-bulk
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: singapore
+    # Disks are not available on the free instance type, and without a disk the
+    # app refuses to start rather than losing drafts on every deploy.
+    plan: starter
+    healthCheckPath: /healthz
+    # Must stay 1: each instance runs its own dispatcher against its own SQLite
+    # file, so a second instance would be a second, unaware sender.
+    numInstances: 1
+
+    disk:
+      name: sms-data
+      mountPath: /data
+      sizeGB: 1
+
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: PORT
+        value: 8080
+      # sync:false makes Render prompt for the value instead of storing it here.
+      - key: ACCESS_PASSWORD
+        sync: false
+      - key: ZOOM_ACCOUNT_ID
+        sync: false
+      - key: ZOOM_CLIENT_ID
+        sync: false
+      - key: ZOOM_CLIENT_SECRET
+        sync: false
+      - key: SENDER_NUMBER
+        sync: false
+      - key: ZOOM_PLAN
+        value: pro
+      - key: MAX_RECIPIENTS_PER_JOB
+        value: 200
+      - key: QUIET_HOURS
+        value: 21-8
+      # PUBLIC_URL and NOTIFY_WEBHOOK_URL are deliberately absent. Both are
+      # optional, and PUBLIC_URL cannot be known before the service has a URL,
+      # so prompting for them at blueprint time only makes them look required.
+      # Add them in the dashboard after the first deploy if you want them.

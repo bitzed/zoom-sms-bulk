@@ -1,0 +1,32 @@
+{
+  "name": "zoom-sms-bulk",
+  "version": "0.1.0",
+  "description": "Bulk SMS sender for Zoom Phone — one sender number, many recipients, sequential with adaptive rate control and exponential backoff.",
+  "type": "module",
+  "bin": {
+    "zoom-sms-bulk": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "files": [
+    "src",
+    "samples",
+    "env.example",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node src/cli.js",
+    "dev": "node --watch src/cli.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "csv-parse": "^5.6.0",
+    "hono": "^4.6.14",
+    "libphonenumber-js": "^1.11.17",
+    "pino": "^9.5.0",
+    "zod": "^3.24.1"
+  },
+  "license": "MIT"
+}

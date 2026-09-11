@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    # Or use the published image instead of building:
+    # image: ghcr.io/OWNER/zoom-sms-bulk:latest
+    ports:
+      - '8080:8080'
+    env_file:
+      - .env
+    volumes:
+      # Named volume keeps drafts and send history across `docker compose down`.
+      - sms-data:/data
+    restart: unless-stopped
+
+volumes:
+  sms-data:

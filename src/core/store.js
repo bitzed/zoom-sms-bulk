@@ -222,6 +222,48 @@ export function openStore(dbPath) {
       ).run(jobId);
       return res.changes;
     },
+
+    // ---- delivery status -------------------------------------------------
+    // Filled in after the fact by polling Zoom's SMS message-detail endpoint.
+    // A send returning 2xx only means "accepted"; this is the closest we get
+    // to knowing whether it actually reached the carrier/handset.
+    setDeliveryStatus(id, status) {
+      sql('UPDATE recipients SET delivery_status = ? WHERE id = ?').run(status ?? null, id);
+    },
+    /**
+     * Accepted recipients whose delivery status is not yet settled. Once Zoom
+     * reports a terminal state (delivered / undelivered / failed / received)
+     * there is nothing left to poll, so those are excluded — reopening the page
+     * re-checks only what can still change. dry-run sends have no real ids.
+     */
+    recipientsNeedingDelivery(jobId) {
+      return sql(
+        `SELECT * FROM recipients
+          WHERE job_id = ? AND status = 'accepted'
+            AND message_id IS NOT NULL AND session_id IS NOT NULL
+            AND session_id != 'dry-run'
+            AND (delivery_status IS NULL
+                 OR delivery_status NOT IN ('delivered','undelivered','failed','received'))
+          ORDER BY seq`
+      ).all(jobId).map(hydrate);
+    },
+    deliveryCounts(jobId) {
+      const rows = sql(
+        `SELECT delivery_status AS s, COUNT(*) AS c
+           FROM recipients WHERE job_id = ? AND status = 'accepted'
+          GROUP BY delivery_status`
+      ).all(jobId);
+      const out = { delivered: 0, undelivered: 0, other: 0, unchecked: 0, accepted: 0 };
+      for (const { s, c } of rows) {
+        out.accepted += c;
+        if (s === 'delivered' || s === 'received') out.delivered += c;
+        else if (s === 'undelivered' || s === 'failed') out.undelivered += c;
+        else if (s == null) out.unchecked += c;
+        else out.other += c;
+      }
+      return out;
+    },
+
     counts(jobId) {
       const out = {
         pending: 0,

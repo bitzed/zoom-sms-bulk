@@ -158,6 +158,15 @@ table.grid, .reject table { width: 100%; border-collapse: collapse; font-size: 1
 }
 .dropzone.over { border-color: var(--accent); color: var(--accent); }
 
+.delivery-panel {
+  margin: 20px 0; padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--bg);
+}
+.delivery-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.delivery-head h2 { margin: 0; }
+.delivery-head h2 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+button.small, .ghost.small { padding: 5px 12px; font-size: 13px; }
+
 .keepalive {
   padding: 10px 13px; background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; margin: 0 0 18px;

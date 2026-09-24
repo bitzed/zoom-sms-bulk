@@ -25,6 +25,7 @@ import {
   dncPage,
   errorPage,
   RECIPIENT_STATUS,
+  deliveryView,
 } from './ui/pages.js';
 
 // ---------------------------------------------------------------- boot
@@ -350,7 +351,7 @@ const csvCell = (v) => {
 app.get('/jobs/:id/export.csv', (c) => {
   const job = store.getJob(c.req.param('id'));
   if (!job) return c.notFound();
-  const header = ['seq', 'phone', 'status', 'status_label', 'attempts', 'message_id', 'session_id', 'last_error'];
+  const header = ['seq', 'phone', 'status', 'status_label', 'delivery_status', 'attempts', 'message_id', 'session_id', 'last_error'];
   const lines = [header.join(',')];
   for (const r of store.listRecipients(job.id, { limit: 1_000_000 })) {
     lines.push(
@@ -359,6 +360,7 @@ app.get('/jobs/:id/export.csv', (c) => {
         r.phone,
         r.status,
         RECIPIENT_STATUS[r.status]?.label ?? r.status,
+        r.delivery_status ?? '',
         r.attempts,
         r.message_id,
         r.session_id,
@@ -398,6 +400,42 @@ app.post('/jobs/:id/retry', (c) => {
   logger.info({ jobId: id, requeued: n }, 'requeued failed recipients');
   runner.start(id).catch((err) => logger.error({ err, id }, 'retry failed'));
   return c.redirect(`/jobs/${id}`, 303);
+});
+
+// Polls Zoom for the delivery status of every accepted-but-unsettled message
+// in this job, updates the store, and returns the current picture for the whole
+// job so the page can repaint. A read-only operation: worst case a check fails
+// and the recipient stays "unchecked", which is harmless.
+const DELIVERY_POLL_CONCURRENCY = 4;
+
+app.post('/jobs/:id/delivery', async (c) => {
+  const id = c.req.param('id');
+  if (!store.getJob(id)) return c.notFound();
+
+  const targets = store.recipientsNeedingDelivery(id);
+  let updated = 0;
+  for (let i = 0; i < targets.length; i += DELIVERY_POLL_CONCURRENCY) {
+    const batch = targets.slice(i, i + DELIVERY_POLL_CONCURRENCY);
+    await Promise.all(
+      batch.map(async (r) => {
+        const d = await sms.fetchDelivery({ sessionId: r.session_id, messageId: r.message_id });
+        if (d.ok && d.deliveryStatus) {
+          store.setDeliveryStatus(r.id, d.deliveryStatus);
+          updated += 1;
+        }
+      })
+    );
+  }
+
+  // Return the full accepted set so the client can repaint every row, not just
+  // the ones that changed this time.
+  const recipients = store
+    .listRecipients(id, { limit: 1_000_000 })
+    .filter((r) => r.status === 'accepted' && r.session_id && r.session_id !== 'dry-run')
+    .map((r) => ({ seq: r.seq, ...deliveryView(r.delivery_status) }));
+
+  logger.info({ jobId: id, checked: targets.length, updated }, 'polled delivery status');
+  return c.json({ checked: targets.length, updated, counts: store.deliveryCounts(id), recipients });
 });
 
 // ---- do-not-contact --------------------------------------------------

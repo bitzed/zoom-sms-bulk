@@ -351,6 +351,62 @@ function initJob(root) {
   };
 }
 
+// ------------------------------------------------------------ delivery
+
+/**
+ * Polls Zoom for delivery status and repaints the table. Runs once when the
+ * page opens (so history rows fill in on their own) and again on demand. The
+ * server returns the whole accepted set, so we just repaint every row it names.
+ */
+function initDelivery(panel) {
+  const jobId = panel.dataset.jobId;
+  const btn = document.getElementById('refreshDelivery');
+  const note = document.getElementById('deliveryNote');
+
+  const paintRow = ({ seq, label, cls }) => {
+    const cell = document.querySelector(`[data-delivery-seq="${seq}"]`);
+    if (cell) cell.innerHTML = `<span class="pill ${cls}">${label}</span>`;
+  };
+  const paintTiles = (counts) => {
+    for (const key of ['delivered', 'undelivered', 'other', 'unchecked']) {
+      const el = document.querySelector(`[data-delivery="${key}"]`);
+      if (el) el.textContent = counts[key] ?? 0;
+    }
+  };
+
+  let running = false;
+  async function refresh() {
+    if (running) return;
+    running = true;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '確認中…';
+    }
+    try {
+      const res = await fetch(`/jobs/${jobId}/delivery`, { method: 'POST' });
+      const data = await res.json();
+      data.recipients.forEach(paintRow);
+      paintTiles(data.counts);
+      if (note) {
+        const t = new Date().toLocaleTimeString('ja-JP');
+        note.dataset.lastChecked = t;
+      }
+    } catch {
+      if (note) note.textContent = '配信状況を取得できませんでした。時間をおいて再度お試しください。';
+    } finally {
+      running = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '配信状況を更新';
+      }
+    }
+  }
+
+  btn?.addEventListener('click', refresh);
+  // "Fetch when the page opens", as requested.
+  refresh();
+}
+
 const compose = document.getElementById('compose');
 if (compose) initCompose(compose);
 const confirmForm = document.getElementById('confirmForm');
@@ -360,3 +416,5 @@ if (job) {
   initJobChrome();
   initJob(job);
 }
+const deliveryPanel = document.getElementById('deliveryPanel');
+if (deliveryPanel) initDelivery(deliveryPanel);

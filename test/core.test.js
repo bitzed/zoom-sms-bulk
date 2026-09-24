@@ -11,6 +11,7 @@ import { analyze, render, placeholders } from '../src/core/template.js';
 import { parseRecipients, maskPhone } from '../src/core/parse.js';
 import { openStore } from '../src/core/store.js';
 import { createRunner } from '../src/core/runner.js';
+import { createSmsClient } from '../src/zoom/sms.js';
 
 // ------------------------------------------------------------- backoff
 
@@ -447,4 +448,127 @@ test('requeue picks up failed and unknown recipients only', async (t) => {
   const counts = h.store.counts(jobId);
   assert.equal(counts.accepted, 2);
   assert.equal(h.calls.filter((p) => p === '+818000000001').length, 1, 'no double send');
+});
+
+// -------------------------------------------------- delivery status
+
+function deliveryStore() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zsb-deliv-'));
+  const store = openStore(path.join(dir, 'test.db'));
+  const jobId = store.createJob({
+    operator: 'tester',
+    agreedAt: new Date().toISOString(),
+    sender: '+818000000000',
+    template: 'hi',
+    concurrency: 1,
+    dryRun: false,
+    rows: [
+      { seq: 1, phone: '+818000000001', vars: {} },
+      { seq: 2, phone: '+818000000002', vars: {} },
+      { seq: 3, phone: '+818000000003', vars: {} },
+    ],
+  });
+  return { store, jobId, cleanup: () => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test('recipientsNeedingDelivery lists only accepted, unsettled real sends', (t) => {
+  const h = deliveryStore();
+  t.after(h.cleanup);
+  const [r1, r2, r3] = h.store.listRecipients(h.jobId);
+
+  h.store.markAccepted(r1.id, { messageId: 'm1', sessionId: 's1' }); // needs a check
+  h.store.markAccepted(r2.id, { messageId: 'm2', sessionId: 's2' });
+  h.store.setDeliveryStatus(r2.id, 'delivered');                     // settled, skip
+  h.store.markTerminal(r3.id, 'failed', 'bad number');               // never accepted
+
+  const need = h.store.recipientsNeedingDelivery(h.jobId);
+  assert.deepEqual(need.map((r) => r.seq), [1]);
+});
+
+test('recipientsNeedingDelivery re-checks a non-terminal delivery status', (t) => {
+  const h = deliveryStore();
+  t.after(h.cleanup);
+  const [r1] = h.store.listRecipients(h.jobId);
+  h.store.markAccepted(r1.id, { messageId: 'm1', sessionId: 's1' });
+  h.store.setDeliveryStatus(r1.id, 'sent'); // not terminal — still worth polling
+  assert.deepEqual(h.store.recipientsNeedingDelivery(h.jobId).map((r) => r.seq), [1]);
+});
+
+test('recipientsNeedingDelivery ignores dry-run sessions', (t) => {
+  const h = deliveryStore();
+  t.after(h.cleanup);
+  const [r1] = h.store.listRecipients(h.jobId);
+  h.store.markAccepted(r1.id, { messageId: 'dry-x', sessionId: 'dry-run' });
+  assert.equal(h.store.recipientsNeedingDelivery(h.jobId).length, 0);
+});
+
+test('deliveryCounts buckets statuses for the tiles', (t) => {
+  const h = deliveryStore();
+  t.after(h.cleanup);
+  const [r1, r2, r3] = h.store.listRecipients(h.jobId);
+  for (const r of [r1, r2, r3]) h.store.markAccepted(r.id, { messageId: 'm', sessionId: 's' });
+  h.store.setDeliveryStatus(r1.id, 'delivered');
+  h.store.setDeliveryStatus(r2.id, 'undelivered');
+  // r3 left unchecked
+  const c = h.store.deliveryCounts(h.jobId);
+  assert.equal(c.delivered, 1);
+  assert.equal(c.undelivered, 1);
+  assert.equal(c.unchecked, 1);
+  assert.equal(c.accepted, 3);
+});
+
+function smsWithFetch(handler) {
+  const original = globalThis.fetch;
+  globalThis.fetch = handler;
+  const client = createSmsClient({
+    credentials: { get: async () => 'tok', invalidate() {} },
+    timeoutMs: 1000,
+  });
+  return { client, restore: () => { globalThis.fetch = original; } };
+}
+
+const jsonResponse = (status, body) =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+test('fetchDelivery reads delivery_status from a single-message payload', async (t) => {
+  const { client, restore } = smsWithFetch(async (url) => {
+    assert.match(String(url), /\/sessions\/s1\/messages\/m1$/);
+    return jsonResponse(200, { message_id: 'm1', direction: 'Out', delivery_status: 'delivered' });
+  });
+  t.after(restore);
+  const d = await client.fetchDelivery({ sessionId: 's1', messageId: 'm1' });
+  assert.equal(d.ok, true);
+  assert.equal(d.deliveryStatus, 'delivered');
+});
+
+test('fetchDelivery falls back to sms_histories if a session payload comes back', async (t) => {
+  const { client, restore } = smsWithFetch(async () =>
+    jsonResponse(200, {
+      sms_histories: [
+        { message_id: 'other', delivery_status: 'undelivered' },
+        { message_id: 'm1', delivery_status: 'delivered' },
+      ],
+    })
+  );
+  t.after(restore);
+  const d = await client.fetchDelivery({ sessionId: 's1', messageId: 'm1' });
+  assert.equal(d.deliveryStatus, 'delivered');
+});
+
+test('fetchDelivery never calls the API for dry-run or missing ids', async (t) => {
+  let called = false;
+  const { client, restore } = smsWithFetch(async () => { called = true; return jsonResponse(200, {}); });
+  t.after(restore);
+  assert.equal((await client.fetchDelivery({ sessionId: 'dry-run', messageId: 'x' })).ok, false);
+  assert.equal((await client.fetchDelivery({ sessionId: null, messageId: 'x' })).ok, false);
+  assert.equal(called, false, 'dry-run and missing ids must not hit the network');
+});
+
+test('fetchDelivery reports an HTTP error without throwing', async (t) => {
+  const { client, restore } = smsWithFetch(async () => jsonResponse(404, { code: 7013, message: 'SMS session does not exist' }));
+  t.after(restore);
+  const d = await client.fetchDelivery({ sessionId: 's1', messageId: 'm1' });
+  assert.equal(d.ok, false);
+  assert.equal(d.httpStatus, 404);
+  assert.equal(d.zoomCode, 7013);
 });

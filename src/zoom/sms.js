@@ -1,6 +1,8 @@
 import { parseRetryAfter } from '../core/backoff.js';
 
 const SMS_URL = 'https://api.zoom.us/v2/phone/sms/messages';
+const MESSAGE_URL = (sessionId, messageId) =>
+  `https://api.zoom.us/v2/phone/sms/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`;
 
 const num = (v) => {
   const n = Number(v);
@@ -144,6 +146,78 @@ export function createSmsClient({ credentials, timeoutMs = 15_000, dryRun = fals
       result.error = body?.message ?? text.slice(0, 300) ?? `HTTP ${res.status}`;
       logger?.debug({ status: res.status, code: result.zoomCode, trackingId }, 'sms send failed');
       return result;
+    },
+
+    /**
+     * Reads the delivery status of a single sent message. Uses the
+     * message-detail endpoint (GET .../sessions/{s}/messages/{m}), which only
+     * needs the SMS *message* read scope — unlike session details, which needs
+     * a separate session scope. Never throws; a failed check simply leaves the
+     * recipient unconfirmed, which is harmless.
+     */
+    async fetchDelivery({ sessionId, messageId }) {
+      if (!sessionId || !messageId || sessionId === 'dry-run') {
+        return { ok: false, reason: 'no_ids' };
+      }
+      let token;
+      try {
+        token = await credentials.get();
+      } catch (err) {
+        return { ok: false, reason: 'auth', error: String(err?.message ?? err) };
+      }
+
+      const url = MESSAGE_URL(sessionId, messageId);
+      const get = (t) =>
+        fetch(url, {
+          headers: { Authorization: `Bearer ${t}` },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+
+      let res;
+      try {
+        res = await get(token);
+        if (res.status === 401) {
+          credentials.invalidate();
+          token = await credentials.get();
+          res = await get(token);
+        }
+      } catch (err) {
+        const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+        return { ok: false, reason: timedOut ? 'timeout' : 'network', error: String(err?.message ?? err) };
+      }
+
+      const text = await res.text();
+      let body = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        /* non-JSON */
+      }
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: 'http',
+          httpStatus: res.status,
+          zoomCode: body?.code ?? null,
+          error: body?.message ?? `HTTP ${res.status}`,
+        };
+      }
+
+      // The endpoint returns a single message object. Be defensive in case a
+      // session-shaped payload (an sms_histories array) ever comes back.
+      const msg =
+        body?.delivery_status != null
+          ? body
+          : body?.sms_histories?.find((m) => m.message_id === messageId) ??
+            body?.sms_histories?.[0] ??
+            body;
+
+      return {
+        ok: true,
+        deliveryStatus: msg?.delivery_status ?? null,
+        direction: msg?.direction ?? null,
+        dateTime: msg?.date_time ?? null,
+      };
     },
   };
 }

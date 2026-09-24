@@ -26,6 +26,26 @@ export const JOB_STATUS = {
   canceled: '中断',
 };
 
+// Delivery status as reported by Zoom's SMS message-detail endpoint. This is a
+// step beyond "accepted" — it is what Zoom knows about the message reaching the
+// carrier/handset — but it is still Zoom's view, not a guarantee of the phone.
+export const DELIVERY_STATUS = {
+  delivered: { label: '配信済み', cls: 'ok' },
+  received: { label: '受信', cls: 'ok' },
+  undelivered: { label: '不達', cls: 'bad' },
+  failed: { label: '配信失敗', cls: 'bad' },
+  sent: { label: '送出済み', cls: 'warn' },
+  queued: { label: 'キュー待ち', cls: 'warn' },
+  sending: { label: '配信中', cls: 'warn' },
+  pending: { label: '確認中', cls: 'warn' },
+};
+
+/** Raw delivery_status (or null) → a { label, cls } the UI can render. */
+export function deliveryView(raw) {
+  if (raw == null) return { label: '未確認', cls: 'muted', raw: null };
+  return { ...(DELIVERY_STATUS[raw] ?? { label: raw, cls: 'muted' }), raw };
+}
+
 const PAUSE_REASON = {
   daily_limit: '日次レート上限に達しました',
   circuit: '連続失敗が続いたため安全のため停止しました',
@@ -337,6 +357,27 @@ export function jobPage(ctx, { job, counts, recipients }) {
   </div>
   <p class="meta" id="governor"></p>
 
+  ${
+    job.dry_run
+      ? ''
+      : `<div class="delivery-panel" id="deliveryPanel" data-job-id="${esc(job.id)}">
+    <div class="delivery-head">
+      <h2>配信状況 <small>（Zoom 調べ・参考値）</small></h2>
+      <button class="ghost small" id="refreshDelivery" type="button">配信状況を更新</button>
+    </div>
+    <div class="tiles">
+      <div class="tile ok"><b data-delivery="delivered">–</b><span>配信済み</span></div>
+      <div class="tile bad"><b data-delivery="undelivered">–</b><span>不達</span></div>
+      <div class="tile warn"><b data-delivery="other">–</b><span>配信中ほか</span></div>
+      <div class="tile muted"><b data-delivery="unchecked">–</b><span>未確認</span></div>
+    </div>
+    <p class="meta" id="deliveryNote">
+      Zoom が受理したメッセージについて、実際の配信状況を Zoom API から取得します。
+      「配信済み」も Zoom が報告する状態であり、相手端末での着信を保証するものではありません。
+    </p>
+  </div>`
+  }
+
   <div class="actions">
     <a class="primary" href="/jobs/${esc(job.id)}/export.csv" id="download">結果 CSV をダウンロード</a>
     ${
@@ -376,11 +417,23 @@ export function jobPage(ctx, { job, counts, recipients }) {
 
   <h2>宛先一覧</h2>
   <table class="grid">
-    <thead><tr><th>#</th><th>宛先</th><th>状態</th><th>試行</th><th>message_id</th><th>詳細</th></tr></thead>
+    <thead><tr><th>#</th><th>宛先</th><th>状態</th>${
+      job.dry_run ? '' : '<th>配信状況</th>'
+    }<th>試行</th><th>message_id</th><th>詳細</th></tr></thead>
     <tbody>
     ${recipients
       .map((r) => {
         const s = RECIPIENT_STATUS[r.status] ?? { label: r.status, cls: 'muted' };
+        const d = deliveryView(r.delivery_status);
+        // Only accepted, real sends can have a delivery status to show or poll.
+        const deliverable = r.status === 'accepted' && r.session_id && r.session_id !== 'dry-run';
+        const deliveryCell = job.dry_run
+          ? ''
+          : `<td data-delivery-seq="${r.seq}">${
+              deliverable
+                ? `<span class="pill ${d.cls}">${esc(d.label)}</span>`
+                : '<span class="muted small">—</span>'
+            }</td>`;
         return `<tr><td>${r.seq}</td><td class="mono">${esc(r.phone)}</td>
         <td><span class="pill ${s.cls}" ${
           r.status === 'accepted'
@@ -388,7 +441,7 @@ export function jobPage(ctx, { job, counts, recipients }) {
             : r.status === 'unknown'
               ? 'title="タイムアウトのため送信されたかどうか判定できません"'
               : ''
-        }>${esc(s.label)}</span></td>
+        }>${esc(s.label)}</span></td>${deliveryCell}
         <td>${r.attempts}</td><td class="mono small">${esc(r.message_id ?? '')}</td>
         <td class="small">${esc(r.last_error ?? '')}</td></tr>`;
       })

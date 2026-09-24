@@ -258,7 +258,9 @@ export function openStore(dbPath) {
         out.accepted += c;
         if (s === 'delivered' || s === 'received') out.delivered += c;
         else if (s === 'undelivered' || s === 'failed') out.undelivered += c;
-        else if (s == null) out.unchecked += c;
+        // null = never polled, "unknown" = Zoom has no confirmation yet. Both
+        // read as "not confirmed" to the operator.
+        else if (s == null || s === 'unknown') out.unchecked += c;
         else out.other += c;
       }
       return out;

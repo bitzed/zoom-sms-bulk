@@ -29,18 +29,21 @@ export const JOB_STATUS = {
 // Delivery status as reported by Zoom's SMS message-detail endpoint. This is a
 // step beyond "accepted" — it is what Zoom knows about the message reaching the
 // carrier/handset — but it is still Zoom's view, not a guarantee of the phone.
+//
+// Values observed from Zoom in practice: "delivered" (a real handset) and
+// "unknown" (an unreachable number, no delivery confirmation). "unknown" is
+// treated as not-yet-confirmed, the same bucket as never-polled. The
+// undelivered/failed/received entries are kept defensively in case Zoom returns
+// them; anything unrecognised falls through to its raw string.
 export const DELIVERY_STATUS = {
   delivered: { label: '配信済み', cls: 'ok' },
   received: { label: '受信', cls: 'ok' },
   undelivered: { label: '不達', cls: 'bad' },
   failed: { label: '配信失敗', cls: 'bad' },
-  sent: { label: '送出済み', cls: 'warn' },
-  queued: { label: 'キュー待ち', cls: 'warn' },
-  sending: { label: '配信中', cls: 'warn' },
-  pending: { label: '確認中', cls: 'warn' },
+  unknown: { label: '未確認', cls: 'muted' },
 };
 
-/** Raw delivery_status (or null) → a { label, cls } the UI can render. */
+/** Raw delivery_status (null or "unknown" both mean not confirmed yet). */
 export function deliveryView(raw) {
   if (raw == null) return { label: '未確認', cls: 'muted', raw: null };
   return { ...(DELIVERY_STATUS[raw] ?? { label: raw, cls: 'muted' }), raw };

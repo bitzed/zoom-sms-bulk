@@ -12,6 +12,7 @@ import { parseRecipients, maskPhone } from '../src/core/parse.js';
 import { openStore } from '../src/core/store.js';
 import { createRunner } from '../src/core/runner.js';
 import { createSmsClient } from '../src/zoom/sms.js';
+import { deliveryView } from '../src/ui/pages.js';
 
 // ------------------------------------------------------------- backoff
 
@@ -515,6 +516,40 @@ test('deliveryCounts buckets statuses for the tiles', (t) => {
   assert.equal(c.undelivered, 1);
   assert.equal(c.unchecked, 1);
   assert.equal(c.accepted, 3);
+});
+
+test('deliveryCounts treats Zoom\'s "unknown" the same as never-polled', (t) => {
+  // Observed from Zoom: an unreachable number comes back as "unknown", not a
+  // failure. To the operator that reads the same as "not confirmed yet".
+  const h = deliveryStore();
+  t.after(h.cleanup);
+  const [r1, r2, r3] = h.store.listRecipients(h.jobId);
+  for (const r of [r1, r2, r3]) h.store.markAccepted(r.id, { messageId: 'm', sessionId: 's' });
+  h.store.setDeliveryStatus(r1.id, 'delivered');
+  h.store.setDeliveryStatus(r2.id, 'unknown'); // Zoom said unknown
+  // r3 never polled (null)
+  const c = h.store.deliveryCounts(h.jobId);
+  assert.equal(c.delivered, 1);
+  assert.equal(c.unchecked, 2, 'null and "unknown" both count as unchecked');
+  assert.equal(c.other, 0);
+});
+
+test('an "unknown" delivery status is still re-polled (may resolve later)', (t) => {
+  const h = deliveryStore();
+  t.after(h.cleanup);
+  const [r1] = h.store.listRecipients(h.jobId);
+  h.store.markAccepted(r1.id, { messageId: 'm1', sessionId: 's1' });
+  h.store.setDeliveryStatus(r1.id, 'unknown');
+  assert.deepEqual(h.store.recipientsNeedingDelivery(h.jobId).map((r) => r.seq), [1]);
+});
+
+test('deliveryView maps null and "unknown" to the same 未確認 label', () => {
+  assert.equal(deliveryView(null).label, '未確認');
+  assert.equal(deliveryView('unknown').label, '未確認');
+  assert.equal(deliveryView('delivered').label, '配信済み');
+  assert.equal(deliveryView('delivered').cls, 'ok');
+  // A value we do not recognise is shown raw rather than hidden.
+  assert.equal(deliveryView('weird').label, 'weird');
 });
 
 function smsWithFetch(handler) {
